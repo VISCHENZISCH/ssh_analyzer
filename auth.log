@@ -1,0 +1,12 @@
+Oct  5 10:15:01 server sshd[12345]: Failed password for Hacker02 from 192.168.10.23 port 22 ssh2
+Oct  5 10:15:05 server sshd[12346]: Failed password for invalid user admin from 192.168.10.23 port 22 ssh2
+Oct  5 10:15:10 server sshd[12347]: Accepted password for vischenzisch from 192.168.10.200 port 22 ssh2
+Oct  5 10:15:15 server sshd[12348]: Failed password for invalid user root from 192.168.10.100 port 22 ssh2
+Oct  5 10:15:20 server sshd[12349]: Failed password for Hacker01 from 192.168.10.100 port 22 ssh2
+Oct  5 10:15:25 server sshd[12350]: Failed password for Job from 192.168.10.23 port 22 ssh2
+Oct  5 10:15:30 server sshd[12351]: Connection closed by 192.168.10.50 port 22
+Oct  5 10:15:35 server sshd[12352]: Accepted password for admin from 192.168.10.23 port 22 ssh2
+Oct  5 10:15:40 server sshd[12353]: Failed password for invalid user test from 192.168.10.100 port 22 ssh2
+
+Oct  5 10:15:50 server kernel: corrupted line without sshd marker
+Oct  5 10:15:55 server sshd[12355]: Failed password for invalid user nobody from invalid_ip port 22 ssh2
