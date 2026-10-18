@@ -1,88 +1,106 @@
-use std::fs;
-use std::env;
+use clap::Parser;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 use std::process;
 
-use ssh_analyzer::error::AppError;
+use ssh_analyzer::analyzer::{Analyzer, ThreatStatus};
+use ssh_analyzer::error::{AppError, ParseError};
 use ssh_analyzer::parser::parse_line;
-use ssh_analyzer::analyzer::Analyzer;
-use ssh_analyzer::report::{print_report, Report};
+use ssh_analyzer::report::{Report, generate_firewall_rules};
 
-pub struct Config {
-    pub file_path: String,
+#[derive(Parser, Debug)]
+#[command(
+    name = "ssh_analyzer",
+    author = "VISCHENZISCH",
+    version,
+    about = "Analyseur de logs SSH performant - Détecte les attaques par force brute et les compromissions",
+    long_about = None
+)]
+pub struct Cli {
+    /// Chemin vers le fichier de logs auth.log
+    #[arg(value_name = "FICHIER")]
+    pub file_path: PathBuf,
+
+    /// Seuil de tentatives échouées pour considérer une IP suspecte (défaut : 5)
+    #[arg(value_name = "SEUIL", default_value_t = 5)]
     pub threshold: u32,
+
+    /// Activer le mode verbeux (affiche les événements ignorés et détails de parsing)
+    #[arg(short, long)]
+    pub verbose: bool,
+
+    /// Exporter le rapport au format JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Générer des règles de pare-feu (ufw, iptables) pour bloquer les IP suspectes
+    #[arg(short, long)]
+    pub block_rules: bool,
 }
 
-impl Config {
-    pub fn build(args: &[String]) -> Result<Config, &'static str> {
-        if args.len() < 2 {
-            return Err("usage : ssh_analyzer <fichier> [seuil]");
-        }
-
-        let file_path = args[1].clone();
-
-        let threshold = if args.len() >= 3 {
-            args[2]
-                .parse::<u32>()
-                .map_err(|_| "le seuil doit être un entier positif")?
-        } else {
-            5
-        };
-
-        Ok(Config {
-            file_path,
-            threshold,
-        })
-    }
-}
-
-fn run(config: Config) -> Result<(), AppError> {
-    let contents = fs::read_to_string(&config.file_path)?;
+fn run(cli: Cli) -> Result<(), AppError> {
+    let file = File::open(&cli.file_path)?;
+    let reader = BufReader::new(file);
 
     let mut analyzer = Analyzer::new();
 
-    for line in contents.lines() {
+    for line_result in reader.lines() {
+        let line = line_result?;
         analyzer.lines_read += 1;
 
-        match parse_line(line) {
+        match parse_line(&line) {
             Ok(event) => analyzer.process(event),
+            Err(ParseError::NotSshEvent) => {
+                analyzer.non_ssh_lines += 1;
+                if cli.verbose {
+                    eprintln!("[VERBOSE] ligne {} : non-SSH event", analyzer.lines_read);
+                }
+            }
+            Err(ParseError::EmptyLine) => {
+                if cli.verbose {
+                    eprintln!("[VERBOSE] ligne {} : ligne vide", analyzer.lines_read);
+                }
+            }
             Err(e) => {
                 analyzer.lines_skipped += 1;
-                eprintln!("[SKIP] ligne {} : {}", analyzer.lines_read, e);
+                if cli.verbose {
+                    eprintln!("[SKIP] ligne {} : {}", analyzer.lines_read, e);
+                }
             }
         }
     }
 
+    if cli.json {
+        let json_output = serde_json::to_string_pretty(&analyzer)?;
+        println!("{}", json_output);
+        return Ok(());
+    }
+
     println!("\n============= Rapport SSH =============\n");
-    print_report(&analyzer);
+    println!("{}", analyzer.summary(cli.threshold));
 
-    println!("\n--- Détails par IP ---\n");
-    let mut entries: Vec<&ssh_analyzer::analyzer::IpStats> =
-        analyzer.stats.values().collect();
-    entries.sort_by(|a, b| b.failed_attempts.cmp(&a.failed_attempts));
+    if cli.block_rules {
+        println!("\n============= Règles de pare-feu recommandées =============\n");
+        println!("{}", generate_firewall_rules(&analyzer, cli.threshold));
+    }
 
-    for ip_stats in &entries {
-        let prefix = if ip_stats.is_compromised(config.threshold) {
-            "[!!] "
-        } else if ip_stats.is_suspect(config.threshold) {
-            "[!]  "
-        } else {
-            "     "
-        };
-        println!("{}{}", prefix, ip_stats.summary());
+    let has_compromise = analyzer
+        .stats
+        .values()
+        .any(|s| s.status(cli.threshold) == ThreatStatus::Compromised);
+
+    if has_compromise {
+        process::exit(2);
     }
 
     Ok(())
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let cli = Cli::parse();
 
-    let config = Config::build(&args).unwrap_or_else(|err| {
-        eprintln!("Erreur de configuration : {}", err);
-        process::exit(1);
-    });
-
-    if let Err(e) = run(config) {
+    if let Err(e) = run(cli) {
         eprintln!("Erreur : {}", e);
         process::exit(1);
     }

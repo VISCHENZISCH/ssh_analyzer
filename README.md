@@ -4,19 +4,23 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 
-> **Analyseur de logs SSH** - Détecte les tentatives de brute-force et les compromissions en analysant les fichiers `auth.log`.
+> **Analyseur de logs SSH haute performance** - Détecte les attaques par force brute et les compromissions en analysant les fichiers `auth.log`.
 
 ---
 
 ## Fonctionnalités
 
-- **Parsing intelligent** des lignes `sshd` : échecs, succès, événements inconnus
-- **Statistiques par IP** : nombre d'échecs, utilisateurs ciblés, compromissions
-- **Détection de menaces** :
-  - **Suspect** (`[!]`) - IP dépassant le seuil d'échecs
-  - **Compromise** (`[!!]`) - Connexion réussie après de multiples échecs
-- **Validation stricte** des adresses IPv4
-- **Lecture de fichier** avec gestion d'erreurs robuste (`Result`, `From`, `?`)
+- **Streaming mémoire optimisé** (`BufReader`) : lecture ligne par ligne sans saturer la RAM, idéal pour les fichiers de logs volumineux.
+- **Support IPv4 & IPv6 complet** : validation et traitement natif des deux protocoles réseau.
+- **Parsing SSH intelligent** : prise en charge des mots de passe, clés publiques (`Accepted publickey`), authentifications PAM et utilisateurs invalides.
+- **Filtrage propre** : distinction automatique entre lignes SSH et autres services système (CRON, systemd), sans bruit dans le terminal.
+- **Détection des menaces** :
+  - **Suspect** (`[!]`) - IP dépassant le seuil d'échecs configuré
+  - **Compromise** (`[!!]`) - Connexion réussie après une série de tentatives échouées
+- **Génération de règles de remédiation** : export automatique de commandes de blocage pour `ufw` et `iptables` / `ip6tables`.
+- **Export JSON** : intégration facile avec des outils de monitoring et SIEM (Wazuh, Splunk, ELK).
+- **Affichage terminal enrichi** : coloration syntaxique dynamique pour une lecture rapide des alertes.
+- **Code de retour pour l'automatisation** : code de sortie `2` en cas d'intrusion avérée (pratique pour scripts bash / alertes cron).
 
 ---
 
@@ -28,43 +32,59 @@ cd ssh_analyzer
 cargo build --release
 ```
 
-Le binaire sera dans `target/release/ssh_analyzer`.
+Le binaire sera disponible dans `target/release/ssh_analyzer`.
 
 ---
 
 ## Utilisation
 
 ```bash
-# Syntaxe
-ssh_analyzer <fichier_log> [seuil]
+# Syntaxe générale
+ssh_analyzer [OPTIONS] <fichier_log> [seuil]
 
 # Exemples
 cargo run -- auth.log
 cargo run -- auth.log 3
-cargo run -- /var/log/auth.log
+cargo run -- auth.log 3 --block-rules
+cargo run -- auth.log --json
+cargo run -- /var/log/auth.log -v
 ```
 
-### Exemple de sortie
+### Options disponibles
 
-```
-[SKIP] ligne 10 : empty line
-[SKIP] ligne 11 : unrecognized SSH event
-[SKIP] ligne 12 : invalid IP address: invalid_ip
+| Option | Description |
+|---|---|
+| `<FICHIER>` | Chemin vers le fichier `auth.log` à analyser |
+| `[SEUIL]` | Seuil de tentatives échouées avant alerte (défaut : `5`) |
+| `-b, --block-rules` | Génère les commandes de bannissement pare-feu (`ufw`, `iptables`) |
+| `--json` | Exporte le rapport complet au format JSON |
+| `-v, --verbose` | Affiche les détails d'analyse et les lignes ignorées |
+| `-h, --help` | Affiche l'aide |
 
+---
+
+### Exemples de sortie
+
+#### Rapport standard en console
+```text
 ============= Rapport SSH =============
 
-Lignes lues : 12 | Lignes ignorées : 3
-Adresses IP distinctes : 3
+Lignes totales : 385 | Lignes SSH traitées : 257 | Autres daemons : 128 | Ignorées/Erreurs : 0
+Adresses IP distinctes : 2
 
-[SUSPECT]    192.168.10.100 - 3 échecs, utilisateurs ciblés : ["root", "Hacker01", "test"]
-[COMPROMISE] 192.168.10.23  - 3 échecs, utilisateurs ciblés : ["Hacker02", "admin", "Job"], connexion réussie après échecs
-[OK]         192.168.10.200 - aucune anomalie
+[!!] [COMPROMISE] 65.2.161.68 - 48 échecs, 3 succès, cibles : ["admin", "backup", "cyberjunkie", "root", "server_adm", "svc_account"], compromis après brute-force
+     [OK]         203.101.190.9 - 0 échecs, 1 succès, aucune anomalie
+```
 
---- Détails par IP ---
+#### Avec règles de blocage pare-feu (`--block-rules`)
+```bash
+============= Règles de pare-feu recommandées =============
 
-[!]  [SUSPECT]    192.168.10.100 - 3 échecs, utilisateurs ciblés : ["root", "Hacker01", "test"]
-[!!] [COMPROMISE] 192.168.10.23  - 3 échecs, utilisateurs ciblés : ["Hacker02", "admin", "Job"]
-     [OK]         192.168.10.200 - aucune anomalie
+# === Commandes UFW (Uncomplicated Firewall) ===
+sudo ufw insert 1 deny from 65.2.161.68 comment 'SSH Analyzer Threat'
+
+# === Commandes iptables ===
+sudo iptables -I INPUT -s 65.2.161.68 -p tcp --dport 22 -j DROP
 ```
 
 ---
