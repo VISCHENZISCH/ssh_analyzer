@@ -4,15 +4,47 @@ use crate::error::ParseError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SshEvent {
     FailedAuth {
+        timestamp: Option<String>,
         user: String,
         ip: IpAddr,
         invalid_user: bool,
     },
     SuccessAuth {
+        timestamp: Option<String>,
         user: String,
         ip: IpAddr,
     },
     Other,
+}
+
+pub fn extract_timestamp(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let parts: Vec<&str> = trimmed.split_whitespace().take(4).collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    // Check ISO 8601 / RFC 3339 format (ex: 2024-03-06T06:19:54... ou 2024-03-06 06:19:54)
+    if parts[0].len() >= 10 && parts[0].as_bytes()[4] == b'-' && parts[0].as_bytes()[7] == b'-' {
+        if parts[0].contains('T') {
+            return Some(parts[0].to_string());
+        } else if parts.len() >= 2 && parts[1].contains(':') {
+            return Some(format!("{} {}", parts[0], parts[1]));
+        }
+    }
+
+    // Check Syslog standard format (ex: "Mar  6 06:19:54" ou "Oct 15 10:15:01")
+    if parts.len() >= 3 {
+        const MONTHS: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        if MONTHS.contains(&parts[0]) && parts[2].contains(':') {
+            return Some(format!("{} {:>2} {}", parts[0], parts[1], parts[2]));
+        }
+    }
+
+    None
 }
 
 pub fn extract_ip(line: &str) -> Option<IpAddr> {
@@ -65,6 +97,8 @@ pub fn parse_line(line: &str) -> Result<SshEvent, ParseError> {
         return Err(ParseError::NotSshEvent);
     }
 
+    let timestamp = extract_timestamp(trimmed);
+
     if trimmed.contains("Failed password") || trimmed.contains("Failed publickey") {
         let invalid_user = trimmed.contains("invalid user");
 
@@ -76,6 +110,7 @@ pub fn parse_line(line: &str) -> Result<SshEvent, ParseError> {
             .ok_or_else(|| ParseError::InvalidUser("missing".to_string()))?;
 
         return Ok(SshEvent::FailedAuth {
+            timestamp,
             user: user.to_string(),
             ip,
             invalid_user,
@@ -94,6 +129,7 @@ pub fn parse_line(line: &str) -> Result<SshEvent, ParseError> {
             .ok_or_else(|| ParseError::InvalidUser("missing".to_string()))?;
 
         return Ok(SshEvent::SuccessAuth {
+            timestamp,
             user: user.to_string(),
             ip,
         });
@@ -114,6 +150,7 @@ mod tests {
         assert_eq!(
             result,
             SshEvent::FailedAuth {
+                timestamp: Some("Oct  5 10:15:01".to_string()),
                 user: "Hacker02".to_string(),
                 ip: IpAddr::V4(Ipv4Addr::new(192, 168, 10, 23)),
                 invalid_user: false,
@@ -129,6 +166,7 @@ mod tests {
         assert_eq!(
             result,
             SshEvent::FailedAuth {
+                timestamp: Some("Oct  5 10:15:01".to_string()),
                 user: "admin".to_string(),
                 ip: expected_ip,
                 invalid_user: true,
@@ -143,8 +181,23 @@ mod tests {
         assert_eq!(
             result,
             SshEvent::SuccessAuth {
+                timestamp: Some("Oct  5 10:15:10".to_string()),
                 user: "vischenzisch".to_string(),
                 ip: IpAddr::V4(Ipv4Addr::new(192, 168, 10, 200)),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_iso_timestamp() {
+        let line = "2024-03-06T06:19:54.123456+00:00 server sshd[1465]: Accepted password for root from 1.2.3.4 port 42825 ssh2";
+        let result = parse_line(line).unwrap();
+        assert_eq!(
+            result,
+            SshEvent::SuccessAuth {
+                timestamp: Some("2024-03-06T06:19:54.123456+00:00".to_string()),
+                user: "root".to_string(),
+                ip: "1.2.3.4".parse().unwrap(),
             }
         );
     }
