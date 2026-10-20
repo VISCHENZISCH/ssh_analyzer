@@ -19,28 +19,28 @@ pub enum SshEvent {
 
 pub fn extract_timestamp(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
-    let parts: Vec<&str> = trimmed.split_whitespace().take(4).collect();
-    if parts.is_empty() {
-        return None;
-    }
+    let mut iter = trimmed.split_whitespace();
+    let p0 = iter.next()?;
+    let p1 = iter.next()?;
+    let p2 = iter.next();
 
     // Check ISO 8601 / RFC 3339 format (ex: 2024-03-06T06:19:54... ou 2024-03-06 06:19:54)
-    if parts[0].len() >= 10 && parts[0].as_bytes()[4] == b'-' && parts[0].as_bytes()[7] == b'-' {
-        if parts[0].contains('T') {
-            return Some(parts[0].to_string());
-        } else if parts.len() >= 2 && parts[1].contains(':') {
-            return Some(format!("{} {}", parts[0], parts[1]));
+    if p0.len() >= 10 && p0.as_bytes().get(4) == Some(&b'-') && p0.as_bytes().get(7) == Some(&b'-') {
+        if p0.contains('T') {
+            return Some(p0.to_string());
+        } else if p1.contains(':') {
+            return Some(format!("{} {}", p0, p1));
         }
     }
 
     // Check Syslog standard format (ex: "Mar  6 06:19:54" ou "Oct 15 10:15:01")
-    if parts.len() >= 3 {
+    if let Some(p2_str) = p2 {
         const MONTHS: [&str; 12] = [
             "Jan", "Feb", "Mar", "Apr", "May", "Jun",
             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         ];
-        if MONTHS.contains(&parts[0]) && parts[2].contains(':') {
-            return Some(format!("{} {:>2} {}", parts[0], parts[1], parts[2]));
+        if MONTHS.contains(&p0) && p2_str.contains(':') {
+            return Some(format!("{} {:>2} {}", p0, p1, p2_str));
         }
     }
 
@@ -48,6 +48,26 @@ pub fn extract_timestamp(line: &str) -> Option<String> {
 }
 
 pub fn extract_ip(line: &str) -> Option<IpAddr> {
+    // 1. Format standard OpenSSH "... from <IP> port <PORT> ..."
+    if let Some(pos_port) = line.rfind(" port ") {
+        let before_port = &line[..pos_port];
+        if let Some(pos_from) = before_port.rfind(" from ") {
+            let candidate = before_port[pos_from + 6..].trim();
+            let token = candidate.split_whitespace().next().unwrap_or(candidate);
+            let clean = token.trim_matches(|c| c == '[' || c == ']' || c == ':' || c == ',');
+            if let Ok(ip) = clean.parse::<IpAddr>() {
+                return Some(ip);
+            }
+            if let Some(ip_part) = token.strip_prefix('[')
+                && let Some(end_bracket) = ip_part.find(']')
+                && let Ok(ip) = ip_part[..end_bracket].parse::<IpAddr>()
+            {
+                return Some(ip);
+            }
+        }
+    }
+
+    // 2. Format avec 'from' classique (repli)
     if let Some(after_from) = line.split(" from ").nth(1) {
         let token = after_from.split_whitespace().next()?;
         let clean = token.trim_matches(|c| c == '[' || c == ']' || c == ':' || c == ',');
@@ -61,6 +81,8 @@ pub fn extract_ip(line: &str) -> Option<IpAddr> {
             return Some(ip);
         }
     }
+
+    // 3. Format PAM / auth (ex: rhost=192.168.1.1)
     if let Some(after_rhost) = line.split("rhost=").nth(1) {
         let token = after_rhost.split_whitespace().next()?;
         let clean = token.trim_matches(|c| c == '[' || c == ']' || c == ':' || c == ',');
@@ -93,7 +115,10 @@ pub fn parse_line(line: &str) -> Result<SshEvent, ParseError> {
         return Err(ParseError::EmptyLine);
     }
 
-    if !trimmed.contains("sshd[") {
+    let is_sshd = trimmed.contains("sshd[")
+        || trimmed.contains("sshd-session[")
+        || trimmed.contains("sshd:");
+    if !is_sshd {
         return Err(ParseError::NotSshEvent);
     }
 
@@ -220,5 +245,35 @@ mod tests {
         let line = "Mar  6 06:19:54 ip-172-31-35-28 sshd[1465]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)";
         let result = parse_line(line).unwrap();
         assert_eq!(result, SshEvent::Other);
+    }
+
+    #[test]
+    fn test_parse_sshd_session_modern_openssh() {
+        let line = "2024-03-06T06:19:54.123456+00:00 server sshd-session[1465]: Failed password for root from 1.2.3.4 port 42825 ssh2";
+        let result = parse_line(line).unwrap();
+        assert_eq!(
+            result,
+            SshEvent::FailedAuth {
+                timestamp: Some("2024-03-06T06:19:54.123456+00:00".to_string()),
+                user: "root".to_string(),
+                ip: "1.2.3.4".parse().unwrap(),
+                invalid_user: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_user_named_from_edge_case() {
+        let line = "Oct  5 10:15:01 server sshd[123]: Failed password for from from 192.168.10.23 port 22 ssh2";
+        let result = parse_line(line).unwrap();
+        assert_eq!(
+            result,
+            SshEvent::FailedAuth {
+                timestamp: Some("Oct  5 10:15:01".to_string()),
+                user: "from".to_string(),
+                ip: "192.168.10.23".parse().unwrap(),
+                invalid_user: false,
+            }
+        );
     }
 }

@@ -51,18 +51,20 @@ pub struct Cli {
     pub save_rules: Option<PathBuf>,
 }
 
+const BUFFER_CAPACITY: usize = 128 * 1024; // 128 Ko pour débit I/O élevé
+
 fn open_reader(path: &Path) -> Result<Box<dyn BufRead>, AppError> {
     if path.to_str() == Some("-") {
         let stdin = std::io::stdin();
-        return Ok(Box::new(BufReader::new(stdin)));
+        return Ok(Box::new(BufReader::with_capacity(BUFFER_CAPACITY, stdin)));
     }
 
     let file = File::open(path)?;
     if path.extension().and_then(|ext| ext.to_str()) == Some("gz") {
         let gz = flate2::read::GzDecoder::new(file);
-        Ok(Box::new(BufReader::new(gz)))
+        Ok(Box::new(BufReader::with_capacity(BUFFER_CAPACITY, gz)))
     } else {
-        Ok(Box::new(BufReader::new(file)))
+        Ok(Box::new(BufReader::with_capacity(BUFFER_CAPACITY, file)))
     }
 }
 

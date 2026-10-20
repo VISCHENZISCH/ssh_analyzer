@@ -66,7 +66,13 @@ impl IpStats {
             if self.first_seen.is_none() {
                 self.first_seen = Some(ts.clone());
             }
-            self.last_seen = Some(ts);
+            if let Some(ref mut last) = self.last_seen {
+                if *last != ts {
+                    *last = ts;
+                }
+            } else {
+                self.last_seen = Some(ts);
+            }
         }
     }
 }
@@ -93,7 +99,11 @@ impl Analyzer {
                 ip,
                 invalid_user,
             } => {
-                *self.user_failures.entry(user.clone()).or_insert(0) += 1;
+                if let Some(count) = self.user_failures.get_mut(&user) {
+                    *count += 1;
+                } else {
+                    self.user_failures.insert(user.clone(), 1);
+                }
                 let entry = self.stats.entry(ip).or_insert_with(|| IpStats::new(ip));
                 entry.failed_attempts += 1;
                 if invalid_user {
